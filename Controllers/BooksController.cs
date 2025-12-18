@@ -20,10 +20,53 @@ namespace Florut_Mara_Lab2.Controllers
         }
 
         // GET: Books
-        public async Task<IActionResult> Index()
+        public async Task<IActionResult> Index(string sortOrder, string searchString)
         {
-            var libraryContext = _context.Book.Include(b => b.Genre).Include(b => b.Author);
-            return View(await libraryContext.ToListAsync());
+            ViewData["TitleSortParm"] = String.IsNullOrEmpty(sortOrder) ? "title_desc" : "";
+            ViewData["PriceSortParm"] = sortOrder == "Price" ? "price_desc" : "Price";
+            ViewData["AuthorSortParm"] = sortOrder == "Author" ? "author_desc" : "Author";
+            ViewData["CurrentFilter"] = searchString;
+
+            var booksQuery = from b in _context.Book
+                             join a in _context.Author on b.AuthorID equals a.ID
+                             select new BookViewModel
+                             {
+                                 ID = b.ID,
+                                 Title = b.Title,
+                                 Price = b.Price,
+                                 FullName = a.FullName
+                             };
+
+            if (!String.IsNullOrEmpty(searchString))
+            {
+                booksQuery = booksQuery.Where(s => s.Title.Contains(searchString));
+            }
+
+            var booksList = await booksQuery.AsNoTracking().ToListAsync();
+
+            switch (sortOrder)
+            {
+                case "title_desc":
+                    booksList = booksList.OrderByDescending(b => b.Title).ToList();
+                    break;
+                case "Price":
+                    booksList = booksList.OrderBy(b => b.Price).ToList();
+                    break;
+                case "price_desc":
+                    booksList = booksList.OrderByDescending(b => b.Price).ToList();
+                    break;
+                case "Author":
+                    booksList = booksList.OrderBy(b => b.FullName).ToList();
+                    break;
+                case "author_desc":
+                    booksList = booksList.OrderByDescending(b => b.FullName).ToList();
+                    break;
+                default:
+                    booksList = booksList.OrderBy(b => b.Title).ToList();
+                    break;
+            }
+
+            return View(booksList);
         }
 
         // GET: Books/Details/5
@@ -35,8 +78,13 @@ namespace Florut_Mara_Lab2.Controllers
             }
 
             var book = await _context.Book
-                .Include(b => b.Genre).Include(b => b.Author)
-                .FirstOrDefaultAsync(m => m.ID == id);
+            .Include(b => b.Genre).Include(b => b.Author)
+            .FirstOrDefaultAsync(m => m.ID == id);
+            book = await _context.Book
+            .Include(s => s.Orders)
+            .ThenInclude(e => e.Customer)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(m => m.ID == id);
             if (book == null)
             {
                 return NotFound();
@@ -49,7 +97,7 @@ namespace Florut_Mara_Lab2.Controllers
         public IActionResult Create()
         {
             ViewData["GenreID"] = new SelectList(_context.Set<Genre>(), "ID", "Name");
-            ViewData["AuthorID"] = new SelectList(_context.Set<Author>(), "ID", "LastName");
+            ViewData["AuthorID"] = new SelectList(_context.Set<Author>(), "ID", "FullName");
             return View();
         }
 
@@ -58,16 +106,27 @@ namespace Florut_Mara_Lab2.Controllers
         // For more details, see http://go.microsoft.com/fwlink/?LinkId=317598.
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Create([Bind("ID,Title,AuthorID,Price,GenreID")] Book book)
+        public async Task<IActionResult> Create([Bind("Title,AuthorID,GenreID,Price")] Book book)
         {
-            if (ModelState.IsValid)
+            try
+            {
+                ModelState.Remove("Author");
+                ModelState.Remove("Genre");
+                if (ModelState.IsValid)
             {
                 _context.Add(book);
                 await _context.SaveChangesAsync();
                 return RedirectToAction(nameof(Index));
             }
+            }
+            catch (DbUpdateException /* ex*/)
+            {
+
+                ModelState.AddModelError("", "Unable to save changes. " +
+                "Try again, and if the problem persists ");
+            }
             ViewData["GenreID"] = new SelectList(_context.Set<Genre>(), "ID", "Name", book.GenreID);
-            ViewData["AuthorID"] = new SelectList(_context.Set<Author>(), "ID", "LastName", book.AuthorID);
+            ViewData["AuthorID"] = new SelectList(_context.Set<Author>(), "ID", "FullName", book.AuthorID);
             return View(book);
         }
 
@@ -85,45 +144,41 @@ namespace Florut_Mara_Lab2.Controllers
                 return NotFound();
             }
             ViewData["GenreID"] = new SelectList(_context.Set<Genre>(), "ID", "Name", book.GenreID);
-            ViewData["AuthorID"] = new SelectList(_context.Set<Author>(), "ID", "LastName", book.AuthorID);
+            ViewData["AuthorID"] = new SelectList(_context.Set<Author>(), "ID", "FullName", book.AuthorID);
             return View(book);
         }
 
         // POST: Books/Edit/5
         // To protect from overposting attacks, enable the specific properties you want to bind to.
         // For more details, see http://go.microsoft.com/fwlink/?LinkId=317598.
-        [HttpPost]
+        [HttpPost, ActionName("Edit")]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Edit(int id, [Bind("ID,Title,AuthorID,Price,GenreID")] Book book)
+        public async Task<IActionResult> EditPost(int? id)
         {
-            if (id != book.ID)
+            if (id == null)
             {
                 return NotFound();
             }
-
-            if (ModelState.IsValid)
+            var bookToUpdate = await _context.Book.FirstOrDefaultAsync(s => s.ID == id);
+            if (await TryUpdateModelAsync<Book>(
+            bookToUpdate,
+            "",
+            s => s.AuthorID, s => s.Title, s => s.Price, s => s.GenreID))
             {
                 try
                 {
-                    _context.Update(book);
                     await _context.SaveChangesAsync();
+                    return RedirectToAction(nameof(Index));
                 }
-                catch (DbUpdateConcurrencyException)
+                catch (DbUpdateException /* ex */)
                 {
-                    if (!BookExists(book.ID))
-                    {
-                        return NotFound();
-                    }
-                    else
-                    {
-                        throw;
-                    }
+                    ModelState.AddModelError("", "Unable to save changes. " +
+                    "Try again, and if the problem persists");
                 }
-                return RedirectToAction(nameof(Index));
             }
-            ViewData["GenreID"] = new SelectList(_context.Set<Genre>(), "ID", "Name", book.GenreID);
-            ViewData["AuthorID"] = new SelectList(_context.Set<Author>(), "ID", "LastName", book.AuthorID);
-            return View(book);
+            ViewData["AuthorID"] = new SelectList(_context.Author, "ID", "FullName",
+            bookToUpdate.AuthorID);
+            return View(bookToUpdate);
         }
 
         // GET: Books/Delete/5
